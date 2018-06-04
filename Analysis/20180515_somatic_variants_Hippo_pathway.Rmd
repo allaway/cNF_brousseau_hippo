@@ -1,0 +1,172 @@
+---
+title: "hippo pathway gene mutations in cNF"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+Mutation file for 33 cNFs and 9 patients was taken from the CTF Cutaneous Neurofibroma Data Resource, and reference hippo pathway genes were acquired from KEGG hsa04390, as well as Jean-Philippe's 51 gene list. There are a total of 166 genes considering both of these sources. 
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(synapser)
+library(data.table)
+library(ggplot2)
+library(plotly)
+library(KEGGREST)
+library(GenVisR)
+library(DT)
+synLogin()
+
+##Get hippo pathway genes from KEGGREST
+hippo_kegg <- keggGet(c("hsa04390"))
+is.even <- function(x) x %% 2 == 0
+
+hippo_genes <- hippo_kegg[[1]]$GENE[is.even(1:length(hippo_kegg[[1]]$GENE))] %>% 
+  gsub(";.+", "", .) %>% 
+  gsub(" readthr.+", "", .)
+
+gene.list.51 <- read.csv("../Data/51_GENE_LIST.csv", header = F)
+
+hippo_genes <- union(gene.list.51$V1, hippo_genes) 
+hippo_genes <- hippo_genes[hippo_genes != "TGFB1"]
+##Get all mutation data for cNF 
+mut<-read.table(synGet("syn5839666")$path, sep = "\t", header = TRUE, colClasses = "character", stringsAsFactors = TRUE) 
+
+##restructure to Genvisr compatible format
+mut$chr <- str_extract(mut$Chromosome, "\\d")
+names(mut)[names(mut)=="Mutation_Type"] <- "Variant_Classification"
+names(mut)[names(mut)=="Sample_ID"] <- "Tumor_Sample_Barcode"
+
+##filter for somatic genes in list 
+soms <- filter(mut, Mutation_Status == "Somatic") %>% filter(Hugo_Symbol %in% hippo_genes)
+germs <- filter(mut, Mutation_Status == "Germline") %>% filter(Hugo_Symbol %in% hippo_genes)
+# 
+# cols <- c("#17B890", "#FF6F59", "#D7263D", "black", "black", "black", "black", "#A7BBEC", "#FFF07C", "black", "black", "black", "black", "black", "black", "black", "black", "black")
+
+all.genes <- 	20376 ##grCH38 number of coding genes
+
+burd<- sapply(unique(mut$Tumor_Sample_Barcode), function(i){
+  foo <- mut %>% filter(Tumor_Sample_Barcode==i)
+  bar <- foo %>% filter(Hugo_Symbol %in% hippo_genes)
+  overall_burden <- signif((length(unique(foo$Hugo_Symbol))/all.genes)*100,3)
+  hippo_burden <- signif((length(unique(bar$Hugo_Symbol))/length(hippo_genes))*100,3)
+  burd <- c("barcode" = i, "overall_burden" = overall_burden, "hippo_burden"= hippo_burden)
+  burd
+})
+burd <- t(burd)
+```
+
+I filtered the data to evaluate whether mutations in hippo pathway genes show up in cNF somatic data. Very few mutations show up, except for patient 8 tumor 9. This sample has a very high somatic mutation rate and should probably be disregarded as atypical. The majority of mutations observed are silent. 
+
+Waterfall plot for somatic mutations [here](https://www.synapse.org/#!Synapse:syn12229684).  
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+png(file = "soms_hippo.png", height = 11, width = 10, units = "in", res = 600)
+waterfall(soms, fileType = "MAF", 
+          mainRecurCutoff = 0, mainDropMut = TRUE)
+dev.off()
+
+```
+
+Table summarizing somatic mutations:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+datatable(soms)
+```
+
+I then performed the same exercise as above but evaluating germline mutations. Again, there are very few consistently mutated genes. The one exception is TGFB1 P10L, which is seen in every patient's germline. This SNP is well-documented (https://opensnp.org/snps/rs1982073, https://www.snpedia.com/index.php/Rs1800470 ) and might be of interest.
+
+Waterfall plot for germline mutations [here](https://www.synapse.org/#!Synapse:syn12229700). 
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+png(file = "germs_hippo.png", height = 11, width = 10, units = "in", res = 600)
+waterfall(germs, fileType = "MAF", 
+          mainRecurCutoff = 0, mainDropMut = TRUE)
+dev.off()
+```
+
+Table summarizing germline mutations: 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+datatable(germs)
+```
+
+Finally, I took the list of mutations (all genes - not just hippo pathway) and did enrichment analysis using KEGG_2016 as the source ontology database, which includes the term mentioned before (i.e. "hippo signaling pathway_Homo sapiens_hsa04390"). Only one sample is significantly enriched for this pathway - patient 8 tumor 9, which is likely due to the overall mutation burden in that sample. Again, I would suggest disregarding this sample. 
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(enrichR)
+db <- "KEGG_2016"
+
+res <- lapply(unique(mut$Tumor_Sample_Barcode), function(x){
+  foo <- filter(mut, Tumor_Sample_Barcode == x)
+  bar <- enrichr(foo$Hugo_Symbol, db)
+  bar$KEGG_2016
+})
+
+library(plyr)
+names(res) <- unique(mut$Tumor_Sample_Barcode)
+res <- ldply(res)
+
+res.hippo <- filter(res, Term == "Hippo signaling pathway_Homo sapiens_hsa04390") %>% 
+  select(.id, Term, Overlap, Adjusted.P.value, Z.score, Combined.Score, Genes)
+
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+datatable(res.hippo)
+```
+
+In conclusion, there appear to be very few mutations in the tumors or germline in hippo signaling genes. If these samples have dysregulation of hippo signaling, it might be detectable in the expression data rather than the mutation data.
+
+```{r  message=FALSE, warning=FALSE, include=FALSE}
+this.file <- "https://raw.githubusercontent.com/allaway/cNF_brosseau_analysis/master/Analysis/20180515_somatic_variants_Hippo_pathway.Rmd"
+  
+write.csv(soms,"somatic_mutations_hippo.txt")
+write.csv(germs,"germline_mutations_hippo.txt")
+write.csv(res.hippo,"KEGG_enrichR_hippo_all_cNF_samples.txt")
+
+synStore(File("somatic_mutations_hippo.txt",parentId="syn12179946"), used = c("syn5839666"), executed = this.file)
+synStore(File("germline_mutations_hippo.txt",parentId="syn12179946"), used = c("syn5839666"), executed = this.file)
+
+synStore(File("KEGG_enrichR_hippo_all_cNF_samples.txt",parentId="syn12179946"), used = c("syn5839666"), executed = this.file)
+
+synStore(File("soms_hippo.png",parentId="syn12179946"), used = c("syn5839666"), executed = this.file)
+synStore(File("germs_hippo.png",parentId="syn12179946"), used = c("syn5839666"), executed = this.file)
+
+germ.annot <- list("resourceType" = "analysis", 
+              "analysisType" = "variant calling",
+              "tumorType" = "Neurofibroma Cutaneous",
+              "assay" = "wholeGenomeSeq",
+              "diagnosis" = "Neurofibromatosis 1")
+
+som.annot <- list("resourceType" = "analysis", 
+              "analysisType" = "somatic mutation calling",
+              "tumorType" = "Neurofibroma Cutaneous",
+              "assay" = "wholeGenomeSeq",
+              "diagnosis" = "Neurofibromatosis 1")
+
+waterfall.annot <- list("resourceType" = "analysis", 
+              "analysisType" = "visualization",
+              "visualisationMethod" = "mutation waterfall",
+              "tumorType" = "Neurofibroma Cutaneous",
+              "assay" = "wholeGenomeSeq",
+              "diagnosis" = "Neurofibromatosis 1")
+
+enrichr.annot <- list("resourceType" = "analysis", 
+              "analysisType" = "Enrichr",
+              "tumorType" = "Neurofibroma Cutaneous",
+              "assay" = "wholeGenomeSeq",
+              "diagnosis" = "Neurofibromatosis 1")
+
+synSetAnnotations("syn12228767", som.annot)
+synSetAnnotations("syn12228769", germ.annot)
+synSetAnnotations("syn12179946", enrichr.annot)
+synSetAnnotations("syn12229684", waterfall.annot)
+synSetAnnotations("syn12229700", waterfall.annot)
+
+```
